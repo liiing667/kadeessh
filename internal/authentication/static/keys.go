@@ -99,6 +99,9 @@ func (pk *StaticPublicKeyProvider) Provision(ctx caddy.Context) error {
 				if err != nil {
 					return err
 				}
+				if _, _, err := authentication.ParseAuthorizedKeyOptions(opts); err != nil {
+					return fmt.Errorf("invalid options in key source %q: %w", kurl, err)
+				}
 				keys = append(keys, authorizedKey{key: k, opts: opts})
 				authKeysBytes = rest
 			}
@@ -126,7 +129,10 @@ func (pk StaticPublicKeyProvider) AuthenticateUser(ctx session.ConnMetadata, pub
 
 	for _, entry := range acc.sshKeys {
 		if ssh.KeysEqual(entry.key, pubkey) {
-			criticalOptions, extensions := authentication.ParseAuthorizedKeyOptions(entry.opts)
+			criticalOptions, extensions, err := authentication.ParseAuthorizedKeyOptions(entry.opts)
+			if err != nil {
+				return Account{}, false, fmt.Errorf("parsing options of matching authorized_keys entry: %w", err)
+			}
 			return Account{
 				ID:    acc.Username,
 				Uname: acc.Username,

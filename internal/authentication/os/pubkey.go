@@ -1,6 +1,7 @@
 package osauth
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -71,7 +72,10 @@ func (o *PublicKey) AuthenticateUser(ctx session.ConnMetadata, pubkey gossh.Publ
 			return account{}, false, err
 		}
 		if ssh.KeysEqual(key, pubkey) {
-			criticalOptions, extensions := authentication.ParseAuthorizedKeyOptions(opts)
+			criticalOptions, extensions, err := authentication.ParseAuthorizedKeyOptions(opts)
+			if err != nil {
+				return account{}, false, fmt.Errorf("parsing options of matching authorized_keys entry: %w", err)
+			}
 			return account{
 				user: u,
 				metadata: map[string]any{

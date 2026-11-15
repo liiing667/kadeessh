@@ -13,6 +13,7 @@ func TestParseAuthorizedKeyOptions(t *testing.T) {
 		opts           []string
 		wantCritical   map[string]string
 		wantExtensions map[string]string
+		wantErr        bool
 	}{
 		{
 			name:           "empty",
@@ -51,19 +52,18 @@ func TestParseAuthorizedKeyOptions(t *testing.T) {
 			wantExtensions: map[string]string{},
 		},
 		{
-			name:           "empty value",
-			opts:           []string{"weird="},
-			wantCritical:   map[string]string{"weird": ""},
+			name:           "empty quoted value",
+			opts:           []string{`from=""`},
+			wantCritical:   map[string]string{"from": ""},
 			wantExtensions: map[string]string{},
 		},
 		{
-			name:           "value that starts with a quote but does not end with one is left alone",
-			opts:           []string{`command="unterminated`},
-			wantCritical:   map[string]string{"command": `"unterminated`},
-			wantExtensions: map[string]string{},
+			name:    "value that starts with a quote but does not end with one is rejected",
+			opts:    []string{`command="unterminated`},
+			wantErr: true,
 		},
 		{
-			name:           "repeated key joins with commas",
+			name:           "repeated multi-valued option joins with commas",
 			opts:           []string{`permitopen="host-a:22"`, `permitopen="host-b:80"`},
 			wantCritical:   map[string]string{"permitopen": "host-a:22,host-b:80"},
 			wantExtensions: map[string]string{},
@@ -75,20 +75,133 @@ func TestParseAuthorizedKeyOptions(t *testing.T) {
 				`command="/usr/bin/rrsync /srv/backup"`,
 				`from="10.0.0.0/24"`,
 				"restrict",
+				`principals="alice,bob"`,
 			},
 			wantCritical: map[string]string{
-				"command": "/usr/bin/rrsync /srv/backup",
-				"from":    "10.0.0.0/24",
+				"command":    "/usr/bin/rrsync /srv/backup",
+				"from":       "10.0.0.0/24",
+				"principals": "alice,bob",
 			},
 			wantExtensions: map[string]string{
 				"no-pty":   "",
 				"restrict": "",
 			},
 		},
+		{
+			name:           "comma inside a single environment value is preserved",
+			opts:           []string{`environment="A=1,2"`},
+			wantCritical:   map[string]string{"environment": "A=1,2"},
+			wantExtensions: map[string]string{},
+		},
+		{
+			name:           "escaped quotes and backslashes inside quoted value",
+			opts:           []string{`command="say \"hi\" && C:\\bin\\sh"`},
+			wantCritical:   map[string]string{"command": `say "hi" && C:\bin\sh`},
+			wantExtensions: map[string]string{},
+		},
+		{
+			name:           "repeated identical single-valued option is idempotent",
+			opts:           []string{`from="10.0.0.1"`, `from="10.0.0.1"`},
+			wantCritical:   map[string]string{"from": "10.0.0.1"},
+			wantExtensions: map[string]string{},
+		},
+		{
+			name: "all allowlisted bare flags and value options",
+			opts: []string{
+				"restrict",
+				"no-agent-forwarding",
+				"no-port-forwarding",
+				"no-pty",
+				"no-user-rc",
+				"no-x11-forwarding",
+				"no-verify-required",
+				"permitlisten=localhost:80",
+				"expiry-time=20300101",
+				"tunnel=1",
+			},
+			wantCritical: map[string]string{
+				"permitlisten": "localhost:80",
+				"expiry-time":  "20300101",
+				"tunnel":       "1",
+			},
+			wantExtensions: map[string]string{
+				"restrict":            "",
+				"no-agent-forwarding": "",
+				"no-port-forwarding":  "",
+				"no-pty":              "",
+				"no-user-rc":          "",
+				"no-x11-forwarding":   "",
+				"no-verify-required":  "",
+			},
+		},
+		{
+			name:    "unknown bare flag is rejected",
+			opts:    []string{"not-a-real-option"},
+			wantErr: true,
+		},
+		{
+			name:    "unknown value option is rejected",
+			opts:    []string{`evil="all-the-privileges"`},
+			wantErr: true,
+		},
+		{
+			name:    "option with empty name is rejected",
+			opts:    []string{"=value"},
+			wantErr: true,
+		},
+		{
+			name:    "conflicting repeated single-valued option is rejected",
+			opts:    []string{`command="one"`, `command="two"`},
+			wantErr: true,
+		},
+		{
+			name:    "conflicting principals values are rejected",
+			opts:    []string{`principals="alice"`, `principals="bob"`},
+			wantErr: true,
+		},
+		{
+			name:    "mutually exclusive verify flags are rejected",
+			opts:    []string{"verify-required", "no-verify-required"},
+			wantErr: true,
+		},
+		{
+			name:    "environment value without NAME=value shape is rejected",
+			opts:    []string{`environment="NOEQUALS"`},
+			wantErr: true,
+		},
+		{
+			name:    "environment value with empty name is rejected",
+			opts:    []string{`environment="=bar"`},
+			wantErr: true,
+		},
+		{
+			name:    "unquoted value containing a quote is rejected",
+			opts:    []string{`command=ls"x`},
+			wantErr: true,
+		},
+		{
+			name:    "dangling backslash in quoted value is rejected",
+			opts:    []string{`command="foo\`},
+			wantErr: true,
+		},
+		{
+			name:    "unescaped quote inside quoted value is rejected",
+			opts:    []string{`command="foo"bar"`},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotCritical, gotExtensions := ParseAuthorizedKeyOptions(tt.opts)
+			gotCritical, gotExtensions, err := ParseAuthorizedKeyOptions(tt.opts)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got critical=%#v extensions=%#v", gotCritical, gotExtensions)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			if !reflect.DeepEqual(gotCritical, tt.wantCritical) {
 				t.Errorf("criticalOptions = %#v, want %#v", gotCritical, tt.wantCritical)
 			}
@@ -114,7 +227,10 @@ func TestParseAuthorizedKeyOptions_MatchesUpstreamFormat(t *testing.T) {
 		t.Fatalf("ParseAuthorizedKey: %v", err)
 	}
 
-	critical, extensions := ParseAuthorizedKeyOptions(opts)
+	critical, extensions, err := ParseAuthorizedKeyOptions(opts)
+	if err != nil {
+		t.Fatalf("ParseAuthorizedKeyOptions: %v", err)
+	}
 
 	if got, want := critical["command"], "echo hi"; got != want {
 		t.Errorf("command = %q, want %q (opts=%#v)", got, want, opts)
